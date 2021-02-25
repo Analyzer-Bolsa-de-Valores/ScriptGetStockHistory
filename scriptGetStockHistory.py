@@ -4,6 +4,7 @@ import time
 import os
 
 mongoClient = os.environ["DB_SOURCE"]
+print(f'Mongo Client: {mongoClient}')
 client = MongoClient(mongoClient)
 
 recent_stocks_db = client.recentStocks
