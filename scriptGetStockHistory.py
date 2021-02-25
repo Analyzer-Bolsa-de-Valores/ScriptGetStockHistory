@@ -25,11 +25,11 @@ def get_information(stockCode):
                 return 'invalid'
         print("Aguardando 60 seg...")
         time.sleep(60)
-        return get_information()
+        return get_information(stockCode)
     except expression as identifier:
         print("Aguardando 60 seg...")
         time.sleep(60)
-        return get_information()
+        return get_information(stockCode)
 
 # Formata retorno do serviço
 def get_historical_information(historical):
