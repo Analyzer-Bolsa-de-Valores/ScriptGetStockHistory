@@ -5,6 +5,7 @@ import os
 import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import db
+from datetime import datetime
 
 mongoClient = os.environ["DB_SOURCE"]
 firebase_admin.initialize_app(
@@ -60,19 +61,25 @@ def get_historical_information(historical):
 
 stock_error_list = []
 
-# Função responsável por salvar os dados
-
+def diff_month(d1, d2):
+    return (d1.year - d2.year) * 12 + d1.month - d2.month
 
 def getVariationMonths(historical_doc, toMonth):
     if len(historical_doc) - 1 < toMonth:
         return 0
 
-    actualMonth = historical_doc[0]['close']
-    lastMonth = historical_doc[toMonth - 1]['close']
+    actualMonthValue = historical_doc[0]['close']
+    lastMonthValue = historical_doc[toMonth - 1]['close']
 
-    if lastMonth > actualMonth:
-        return ((lastMonth / actualMonth - 1) * 100) * -1
-    return (actualMonth / lastMonth - 1) * 100
+    actualMonthDate = historical_doc[0]['date']
+
+    monthsDifference = diff_month(datetime.strptime(actualMonthDate, '%Y-%m-%d'), datetime.today())
+
+    if not monthsDifference <= 1: return 0
+
+    if lastMonthValue > actualMonthValue:
+        return ((lastMonthValue / actualMonthValue - 1) * 100) * -1
+    return (actualMonthValue / lastMonthValue - 1) * 100
 
 
 def function_main(stockCode):
