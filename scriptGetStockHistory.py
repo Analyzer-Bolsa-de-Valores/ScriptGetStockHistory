@@ -61,25 +61,29 @@ def get_historical_information(historical):
 
 stock_error_list = []
 
+
 def diff_month(d1, d2):
     return (d1.year - d2.year) * 12 + d1.month - d2.month
+
 
 def getVariationMonths(historical_doc, toMonth):
     if len(historical_doc) - 1 < toMonth:
         return 0
 
-    actualMonthValue = historical_doc[0]['close']
-    lastMonthValue = historical_doc[toMonth - 1]['close']
+    lastMonthValue = historical_doc[0]['close']
+    firstMonthValue = historical_doc[toMonth - 1]['close']
 
-    actualMonthDate = historical_doc[0]['date']
+    lastMonthDate = datetime.strptime(historical_doc[0]['date'], '%Y-%m-%d')
+    todayDate = datetime.today()
 
-    monthsDifference = diff_month(datetime.strptime(actualMonthDate, '%Y-%m-%d'), datetime.today())
+    monthsDifference = diff_month(todayDate, lastMonthDate)
 
-    if not monthsDifference <= 1: return 0
+    if not monthsDifference <= 1:
+        return 0
 
-    if lastMonthValue > actualMonthValue:
-        return ((lastMonthValue / actualMonthValue - 1) * 100) * -1
-    return (actualMonthValue / lastMonthValue - 1) * 100
+    if firstMonthValue > lastMonthValue:
+        return ((firstMonthValue / lastMonthValue - 1) * 100) * -1
+    return (lastMonthValue / firstMonthValue - 1) * 100
 
 
 def function_main(stockCode):
