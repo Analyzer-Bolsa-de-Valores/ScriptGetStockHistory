@@ -78,12 +78,32 @@ def getVariationMonths(historical_doc, toMonth):
 
     monthsDifference = diff_month(todayDate, lastMonthDate)
 
-    if not monthsDifference <= 1:
+    if monthsDifference > 1:
         return 0
 
     if firstMonthValue > lastMonthValue:
         return ((firstMonthValue / lastMonthValue - 1) * 100) * -1
     return (lastMonthValue / firstMonthValue - 1) * 100
+
+
+def getVolumeMonths(historical_doc, toMonth):
+    if len(historical_doc) - 1 < toMonth:
+        return 0
+
+    volumeAcum = 0
+
+    for month in range(0, toMonth):
+        volumeAcum = volumeAcum + historical_doc[month]['volume']
+
+    lastMonthDate = datetime.strptime(historical_doc[0]['date'], '%Y-%m-%d')
+    todayDate = datetime.today()
+
+    monthsDifference = diff_month(todayDate, lastMonthDate)
+
+    if monthsDifference > 1:
+        return 0
+
+    return volumeAcum
 
 
 def function_main(stockCode):
@@ -93,14 +113,14 @@ def function_main(stockCode):
         historical_doc = get_historical_information(historical)
 
         variationTwelveMonths = getVariationMonths(historical_doc, 12)
-        variationEightMonths = getVariationMonths(historical_doc, 8)
         variationSixMonths = getVariationMonths(historical_doc, 6)
+        volumeInLastMonth = getVolumeMonths(historical_doc, 1)
 
         newStock = {
             "historical": historical_doc,
             "variationTwelveMonths": variationTwelveMonths,
-            "variationEightMonths": variationEightMonths,
-            "variationSixMonths": variationSixMonths
+            "variationSixMonths": variationSixMonths,
+            "volumeInLastMonth": volumeInLastMonth,
         }
 
         all_stocks.child(stockCode).set(newStock)
