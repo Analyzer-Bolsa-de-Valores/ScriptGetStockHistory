@@ -7,7 +7,6 @@ from firebase_admin import credentials
 from firebase_admin import db
 from datetime import datetime
 
-mongoClient = os.environ["DB_SOURCE"]
 firebase_admin.initialize_app(
     credentials.Certificate({
         "type": "service_account",
