@@ -23,6 +23,9 @@ all_stocks = db.reference('stockHistory')
 
 
 def get_information(stock_code):
+    """
+    call the api to get stock informations
+    """
     try:
         response = requests.get(
             f'https://www.alphavantage.co/query?function=TIME_SERIES_MONTHLY_ADJUSTED&symbol={stock_code}.sa&apikey=YOUR_API_KEY')
@@ -43,6 +46,9 @@ def get_information(stock_code):
 
 
 def get_historical_information(historical):
+    """
+    format and set stock history
+    """
     historical_doc = []
     for key, historic in historical.items():
         historic_doc = {
@@ -62,15 +68,21 @@ stock_error_list = []
 
 
 def diff_month(d_1, d_2):
+    """
+    get difference between two dates in months
+    """
     return (d_1.year - d_2.year) * 12 + d_1.month - d_2.month
 
 
 def get_variation_months(historical_doc, to_month):
+    """
+    get stock price variation in months (passed as param)
+    """
     if len(historical_doc) - 1 < to_month:
         return 0
 
-    lastMonthValue = historical_doc[0]['close']
-    firstMonthValue = historical_doc[to_month - 1]['close']
+    last_month_value = historical_doc[0]['close']
+    first_month_value = historical_doc[to_month - 1]['close']
 
     last_month_date = datetime.strptime(historical_doc[0]['date'], '%Y-%m-%d')
     today_date = datetime.today()
@@ -80,12 +92,15 @@ def get_variation_months(historical_doc, to_month):
     if months_difference > 1:
         return 0
 
-    if firstMonthValue > lastMonthValue:
-        return ((firstMonthValue / lastMonthValue - 1) * 100) * -1
-    return (lastMonthValue / firstMonthValue - 1) * 100
+    if first_month_value > last_month_value:
+        return ((first_month_value / last_month_value - 1) * 100) * -1
+    return (last_month_value / first_month_value - 1) * 100
 
 
-def getVolumeMonths(historical_doc, to_month):
+def get_volume_months(historical_doc, to_month):
+    """
+    get stock volume variation in months (passed as param)
+    """
     if len(historical_doc) - 1 < to_month:
         return 0
 
@@ -106,6 +121,9 @@ def getVolumeMonths(historical_doc, to_month):
 
 
 def function_main(stock_code):
+    """
+    inital point of execution of each stock
+    """
     data = get_information(stock_code)
     if data != "invalid":
         historical = data['Monthly Adjusted Time Series']
@@ -113,7 +131,7 @@ def function_main(stock_code):
 
         variation_twelve_months = get_variation_months(historical_doc, 12)
         variation_six_months = get_variation_months(historical_doc, 6)
-        volume_in_last_month = getVolumeMonths(historical_doc, 1)
+        volume_in_last_month = get_volume_months(historical_doc, 1)
 
         new_stock = {
             "historical": historical_doc,
@@ -134,14 +152,14 @@ totalAtivos = len(stocks)
 
 print(f'Recuperou todos ativos os {len(stocks)} ativos')
 
-for stock_code in stocks:
-    function_main(stock_code)
+for stock_code_i in stocks:
+    function_main(stock_code_i)
 
-total_ativos_com_erro = len(stock_error_list)
+TOTAL_ATIVOS_COM_ERRO = len(stock_error_list)
 
-print(f'Lista dos {total_ativos_com_erro} ativos com erro:')
+print(f'Lista dos {TOTAL_ATIVOS_COM_ERRO} ativos com erro:')
 for stockerror in stock_error_list:
     print(f'{stockerror} - error')
 
 print()
-print(f'Total de ativos com sucesso: {totalAtivos - total_ativos_com_erro}')
+print(f'Total de ativos com sucesso: {totalAtivos - TOTAL_ATIVOS_COM_ERRO}')
