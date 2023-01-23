@@ -2,7 +2,7 @@ name: get-stock-history-schedule
 
 on:
   schedule:
-    - cron: "0 13 * * 1-5" # runs at 13:00 UTC everyday
+    - cron: "0 23 * * 1-5" # runs at 23:00 UTC everyday
 
 jobs:
   build:
