@@ -23,11 +23,3 @@ jobs:
       - name: analysing the code with pylint
         run: |
           pylint $(git ls-files '*.py')
-
-      - name: execute py script
-        env:
-          FIREBASE_CLIENT_EMAIL: ${{ secrets.FIREBASE_CLIENT_EMAIL }}
-          FIREBASE_DATABASE_URL: ${{ secrets.FIREBASE_DATABASE_URL }}
-          FIREBASE_PRIVATE_KEY: ${{ secrets.FIREBASE_PRIVATE_KEY }}
-          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
-        run: python script_get_stock_history.py
