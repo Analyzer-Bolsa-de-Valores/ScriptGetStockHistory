@@ -1,5 +1,5 @@
 """
-this script is used to get Brazil stock history 
+this script is used to get Brazil stock history
 """
 import os
 from datetime import datetime
@@ -30,9 +30,9 @@ def get_information(stock_code):
     call the api to get stock informations
     """
     try:
-        TYPE = "TIME_SERIES_MONTHLY_ADJUSTED"
+        func = "TIME_SERIES_MONTHLY_ADJUSTED"
         response = requests.get(
-            f'https://www.alphavantage.co/query?function={TYPE}&symbol={stock_code}.sa&apikey=KEY')
+            f'https://www.alphavantage.co/query?function={func}&symbol={stock_code}.sa&apikey=KEY')
         if response.status_code == 200:
             if 'Monthly Adjusted Time Series' in response.text:
                 return response.json()
