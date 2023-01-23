@@ -32,7 +32,8 @@ def get_information(stock_code):
     try:
         func = "TIME_SERIES_MONTHLY_ADJUSTED"
         response = requests.get(
-            f'https://www.alphavantage.co/query?function={func}&symbol={stock_code}.sa&apikey=KEY', timeout=60)
+            f'https://www.alphavantage.co/query?function={func}&symbol={stock_code}.sa&apikey=KEY',
+            timeout=60)
         if response.status_code == 200:
             if 'Monthly Adjusted Time Series' in response.text:
                 return response.json()
@@ -41,8 +42,8 @@ def get_information(stock_code):
         print("Aguardando 60 seg...")
         time.sleep(60)
         return get_information(stock_code)
-    except Exception as e:
-        print(f'Aguardando 60s - {e.message}')
+    except requests.exceptions.RequestException as error:
+        print(f'Aguardando 60s - (Error {error.errno})')
         time.sleep(60)
         return get_information(stock_code)
 
