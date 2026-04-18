@@ -1,9 +1,8 @@
 """
-Script to fetch Brazilian stock price history from Yahoo Finance
+Script to fetch Brazilian stock price history from Investidor10
 and save to Firebase Realtime Database.
 
-Replaces the old Alpha Vantage approach (rate limited, required API key)
-with yfinance (free, no key needed, batch downloads).
+Investidor10: free, no API key, covers all B3 stocks including small caps.
 """
 import os
 import sys
@@ -11,9 +10,16 @@ import time
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import yfinance as yf
+import requests
 import firebase_admin
 from firebase_admin import credentials, db
+
+REQUEST_TIMEOUT = 20
+MAX_WORKERS = 5
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "application/json",
+}
 
 
 def init_firebase():
@@ -30,104 +36,96 @@ def init_firebase():
         })
 
 
-def get_stock_history(stock_code):
-    """
-    Fetch monthly history for a single stock using yfinance.
-    Returns dict in the same format as the existing Firebase data.
-    """
+def fetch_stock_history(stock_code):
+    """Fetch 2 years of daily prices from Investidor10."""
     try:
-        ticker = yf.Ticker(f"{stock_code}.SA")
-        hist = ticker.history(period="2y", interval="1mo")
+        r = requests.get(
+            f"https://investidor10.com.br/api/cotacoes/acao/chart/{stock_code}/730/true",
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+        if r.status_code != 200:
+            return []
 
-        if hist.empty:
-            return None
+        data = r.json()
+        raw = data.get("real", [])
+        if not raw:
+            return []
 
-        historical_doc = []
-        for date, row in hist.iterrows():
-            historical_doc.append({
-                "date": date.strftime("%Y-%m-%d"),
-                "open": round(float(row["Open"]), 2),
-                "high": round(float(row["High"]), 2),
-                "low": round(float(row["Low"]), 2),
-                "close": round(float(row["Close"]), 2),
-                "volume": int(row["Volume"]),
-                "dividend": round(float(row["Dividends"]), 4),
-            })
-
-        # Sort by date descending (most recent first) - matches old format
-        historical_doc.sort(key=lambda x: x["date"], reverse=True)
-
-        return historical_doc
-    except Exception as e:
-        print(f"  WARN: Failed to fetch {stock_code}: {e}")
-        return None
-
-
-def diff_month(d1, d2):
-    """Get difference between two dates in months"""
-    return (d1.year - d2.year) * 12 + d1.month - d2.month
+        prices = []
+        for p in raw:
+            date_str = p["created_at"].split(" ")[0]
+            try:
+                dt = datetime.strptime(date_str, "%d/%m/%Y")
+                prices.append({"date": dt.strftime("%Y-%m-%d"), "price": p["price"]})
+            except ValueError:
+                continue
+        return prices
+    except Exception:
+        return []
 
 
-def get_variation_months(historical_doc, to_month):
-    """
-    Calculate stock price variation over N months.
-    Positive = stock went up, negative = stock went down.
-    """
-    if len(historical_doc) - 1 < to_month:
-        return 0
+def group_daily_to_monthly(daily_prices):
+    """Group daily prices into monthly OHLCV."""
+    monthly = {}
+    for entry in daily_prices:
+        month_key = entry["date"][:7]
+        price = entry["price"]
 
-    last_month_value = historical_doc[0]["close"]
-    first_month_value = historical_doc[to_month - 1]["close"]
+        if month_key not in monthly:
+            monthly[month_key] = {
+                "date": entry["date"],
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+                "volume": 0,
+                "dividend": 0,
+            }
+        else:
+            m = monthly[month_key]
+            m["high"] = max(m["high"], price)
+            m["low"] = min(m["low"], price)
+            m["close"] = price
+            m["date"] = entry["date"]
 
-    last_month_date = datetime.strptime(historical_doc[0]["date"], "%Y-%m-%d")
-    today_date = datetime.today()
-
-    if diff_month(today_date, last_month_date) > 1:
-        return 0
-
-    if first_month_value == 0:
-        return 0
-
-    if first_month_value > last_month_value:
-        return ((first_month_value / last_month_value - 1) * 100) * -1
-    return (last_month_value / first_month_value - 1) * 100
-
-
-def get_volume_months(historical_doc, to_month):
-    """Get total volume over N months"""
-    if len(historical_doc) - 1 < to_month:
-        return 0
-
-    volume_acum = sum(historical_doc[m]["volume"] for m in range(to_month))
-
-    last_month_date = datetime.strptime(historical_doc[0]["date"], "%Y-%m-%d")
-    today_date = datetime.today()
-
-    if diff_month(today_date, last_month_date) > 1:
-        return 0
-
-    return volume_acum
+    result = list(monthly.values())
+    result.sort(key=lambda x: x["date"], reverse=True)
+    return result
 
 
 def process_stock(stock_code):
-    """Process a single stock: fetch history + calculate metrics"""
-    historical_doc = get_stock_history(stock_code)
-
-    if not historical_doc:
+    """Fetch history and build monthly data."""
+    daily = fetch_stock_history(stock_code)
+    if not daily:
         return stock_code, None
+    return stock_code, group_daily_to_monthly(daily)
 
-    variation_twelve = get_variation_months(historical_doc, 12)
-    variation_six = get_variation_months(historical_doc, 6)
-    volume_last_month = get_volume_months(historical_doc, 1)
 
-    result = {
-        "historical": historical_doc,
-        "variationTwelveMonths": round(variation_twelve, 2),
-        "variationSixMonths": round(variation_six, 2),
-        "volumeInLastMonth": volume_last_month,
-    }
+def diff_month(d1, d2):
+    return (d1.year - d2.year) * 12 + d1.month - d2.month
 
-    return stock_code, result
+
+def get_variation_months(hist, to_month):
+    if len(hist) - 1 < to_month:
+        return 0
+    last = hist[0]["close"]
+    first = hist[to_month - 1]["close"]
+    last_date = datetime.strptime(hist[0]["date"], "%Y-%m-%d")
+    if diff_month(datetime.today(), last_date) > 1 or first == 0:
+        return 0
+    if first > last:
+        return ((first / last - 1) * 100) * -1
+    return (last / first - 1) * 100
+
+
+def get_volume_months(hist, to_month):
+    if len(hist) - 1 < to_month:
+        return 0
+    last_date = datetime.strptime(hist[0]["date"], "%Y-%m-%d")
+    if diff_month(datetime.today(), last_date) > 1:
+        return 0
+    return sum(hist[m]["volume"] for m in range(to_month))
 
 
 if __name__ == "__main__":
@@ -143,49 +141,43 @@ if __name__ == "__main__":
         print(f"  Found {len(stock_codes)} stocks")
         sys.stdout.flush()
 
-        print("Step 3: Fetching history for each stock (parallel)...")
+        print(f"Step 3: Fetching history from Investidor10 ({MAX_WORKERS} workers)...")
         sys.stdout.flush()
 
+        all_stocks_ref = db.reference("stockHistory")
         success_count = 0
         error_list = []
-        all_stocks_ref = db.reference("stockHistory")
 
-        # Process in batches with ThreadPool
-        MAX_WORKERS = 10
-        BATCH_SIZE = 50
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = {executor.submit(process_stock, code): code for code in stock_codes}
 
-        for batch_start in range(0, len(stock_codes), BATCH_SIZE):
-            batch = stock_codes[batch_start:batch_start + BATCH_SIZE]
+            for i, future in enumerate(as_completed(futures)):
+                code = futures[future]
+                try:
+                    stock_code, historical = future.result(timeout=120)
+                    if historical:
+                        var12 = get_variation_months(historical, 12)
+                        var6 = get_variation_months(historical, 6)
+                        vol1 = get_volume_months(historical, 1)
 
-            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                futures = {executor.submit(process_stock, code): code for code in batch}
+                        all_stocks_ref.child(stock_code).set({
+                            "historical": historical,
+                            "variationTwelveMonths": round(var12, 2),
+                            "variationSixMonths": round(var6, 2),
+                            "volumeInLastMonth": vol1,
+                        })
+                        success_count += 1
+                except Exception as e:
+                    error_list.append(f"{code}: {e}")
 
-                for future in as_completed(futures):
-                    code = futures[future]
-                    try:
-                        stock_code, result = future.result(timeout=60)
-                        if result:
-                            all_stocks_ref.child(stock_code).set(result)
-                            success_count += 1
-                        else:
-                            error_list.append(stock_code)
-                    except Exception as e:
-                        error_list.append(code)
-                        print(f"  ERROR {code}: {e}")
+                if (i + 1) % 100 == 0 or (i + 1) == len(stock_codes):
+                    print(f"  Progress: {i + 1}/{len(stock_codes)} ({success_count} saved, {len(error_list)} errors)")
+                    sys.stdout.flush()
 
-            processed = min(batch_start + BATCH_SIZE, len(stock_codes))
-            print(f"  Progress: {processed}/{len(stock_codes)} ({success_count} ok, {len(error_list)} errors)")
-            sys.stdout.flush()
-
-            # Small delay between batches to avoid rate limiting
-            if batch_start + BATCH_SIZE < len(stock_codes):
-                time.sleep(2)
-
-        print(f"\nDone! {success_count} stocks saved, {len(error_list)} errors")
-
+        skipped = len(stock_codes) - success_count - len(error_list)
+        print(f"\nDone! {success_count} saved, {skipped} skipped (no data/delisted), {len(error_list)} errors")
         if error_list:
-            print(f"Failed stocks ({len(error_list)}): {', '.join(error_list[:30])}")
-
+            print(f"  Errors: {', '.join(error_list[:10])}")
         sys.stdout.flush()
 
     except Exception as e:

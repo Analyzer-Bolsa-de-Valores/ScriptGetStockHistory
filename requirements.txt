@@ -1,3 +1,2 @@
-yfinance>=0.2.0
-firebase-admin==5.4.0
 requests>=2.28.0
+firebase-admin==5.4.0
