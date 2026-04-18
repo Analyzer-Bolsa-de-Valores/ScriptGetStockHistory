@@ -2,19 +2,21 @@ name: get-stock-history-schedule
 
 on:
   schedule:
-    - cron: "0 12 * * 1-5" # runs at 23:00 UTC everyday
+    - cron: "0 12 1,15 * *" # At 12:00 on day-of-month 1 and 15.
+  workflow_dispatch: # Allow manual trigger
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: checkout repo content
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: setup python
-        uses: actions/setup-python@v3
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.9"
+          python-version: "3.12"
 
       - name: install python packages
         run: |

@@ -1,100 +1,91 @@
 """
-this script is used to get Brazil stock history
+Script to fetch Brazilian stock price history from Yahoo Finance
+and save to Firebase Realtime Database.
+
+Replaces the old Alpha Vantage approach (rate limited, required API key)
+with yfinance (free, no key needed, batch downloads).
 """
 import os
-from datetime import datetime
+import sys
 import time
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import requests
+import yfinance as yf
 import firebase_admin
-from firebase_admin import credentials
-from firebase_admin import db
-
-firebase_admin.initialize_app(
-    credentials.Certificate({
-        "type": "service_account",
-        "project_id": os.environ["FIREBASE_PROJECT_ID"],
-        "private_key": os.environ["FIREBASE_PRIVATE_KEY"].replace('\\n', '\n'),
-        "client_email": os.environ["FIREBASE_CLIENT_EMAIL"],
-        "token_uri": "https://oauth2.googleapis.com/token",
-    }), {
-        'databaseURL': os.environ["FIREBASE_DATABASE_URL"]
-    })
-
-stocks = db.reference('stockFundamentus').get()
-all_stocks = db.reference('stockHistory')
+from firebase_admin import credentials, db
 
 
-def get_information(stock_code):
+def init_firebase():
+    """Initialize Firebase Admin SDK"""
+    firebase_admin.initialize_app(
+        credentials.Certificate({
+            "type": "service_account",
+            "project_id": os.environ["FIREBASE_PROJECT_ID"],
+            "private_key": os.environ["FIREBASE_PRIVATE_KEY"].replace('\\n', '\n'),
+            "client_email": os.environ["FIREBASE_CLIENT_EMAIL"],
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }), {
+            'databaseURL': os.environ["FIREBASE_DATABASE_URL"]
+        })
+
+
+def get_stock_history(stock_code):
     """
-    call the api to get stock informations
+    Fetch monthly history for a single stock using yfinance.
+    Returns dict in the same format as the existing Firebase data.
     """
     try:
-        func = "TIME_SERIES_MONTHLY_ADJUSTED"
-        response = requests.get(
-            f'https://www.alphavantage.co/query?function={func}&symbol={stock_code}.sa&apikey=KEY',
-            timeout=60)
-        if response.status_code == 200:
-            if 'Monthly Adjusted Time Series' in response.text:
-                return response.json()
-            if "Invalid API call" in response.text:
-                return 'invalid'
-        print("Aguardando 60 seg...")
-        time.sleep(60)
-        return get_information(stock_code)
-    except requests.exceptions.RequestException as error:
-        print(f'Aguardando 60s - (Error {error.errno})')
-        time.sleep(60)
-        return get_information(stock_code)
+        ticker = yf.Ticker(f"{stock_code}.SA")
+        hist = ticker.history(period="2y", interval="1mo")
 
-# Formata retorno do serviço
+        if hist.empty:
+            return None
 
+        historical_doc = []
+        for date, row in hist.iterrows():
+            historical_doc.append({
+                "date": date.strftime("%Y-%m-%d"),
+                "open": round(float(row["Open"]), 2),
+                "high": round(float(row["High"]), 2),
+                "low": round(float(row["Low"]), 2),
+                "close": round(float(row["Close"]), 2),
+                "volume": int(row["Volume"]),
+                "dividend": round(float(row["Dividends"]), 4),
+            })
 
-def get_historical_information(historical):
-    """
-    format and set stock history
-    """
-    historical_doc = []
-    for key, historic in historical.items():
-        historic_doc = {
-            "date": key,
-            "open": float(historic["1. open"]),
-            "high": float(historic["2. high"]),
-            "low": float(historic["3. low"]),
-            "close": float(historic["5. adjusted close"]),
-            "volume": float(historic["6. volume"]),
-            "dividend": float(historic["7. dividend amount"])
-        }
-        historical_doc.append(historic_doc)
-    return historical_doc
+        # Sort by date descending (most recent first) - matches old format
+        historical_doc.sort(key=lambda x: x["date"], reverse=True)
+
+        return historical_doc
+    except Exception as e:
+        print(f"  WARN: Failed to fetch {stock_code}: {e}")
+        return None
 
 
-stock_error_list = []
-
-
-def diff_month(d_1, d_2):
-    """
-    get difference between two dates in months
-    """
-    return (d_1.year - d_2.year) * 12 + d_1.month - d_2.month
+def diff_month(d1, d2):
+    """Get difference between two dates in months"""
+    return (d1.year - d2.year) * 12 + d1.month - d2.month
 
 
 def get_variation_months(historical_doc, to_month):
     """
-    get stock price variation in months (passed as param)
+    Calculate stock price variation over N months.
+    Positive = stock went up, negative = stock went down.
     """
     if len(historical_doc) - 1 < to_month:
         return 0
 
-    last_month_value = historical_doc[0]['close']
-    first_month_value = historical_doc[to_month - 1]['close']
+    last_month_value = historical_doc[0]["close"]
+    first_month_value = historical_doc[to_month - 1]["close"]
 
-    last_month_date = datetime.strptime(historical_doc[0]['date'], '%Y-%m-%d')
+    last_month_date = datetime.strptime(historical_doc[0]["date"], "%Y-%m-%d")
     today_date = datetime.today()
 
-    months_difference = diff_month(today_date, last_month_date)
+    if diff_month(today_date, last_month_date) > 1:
+        return 0
 
-    if months_difference > 1:
+    if first_month_value == 0:
         return 0
 
     if first_month_value > last_month_value:
@@ -103,68 +94,102 @@ def get_variation_months(historical_doc, to_month):
 
 
 def get_volume_months(historical_doc, to_month):
-    """
-    get stock volume variation in months (passed as param)
-    """
+    """Get total volume over N months"""
     if len(historical_doc) - 1 < to_month:
         return 0
 
-    volume_acum = 0
+    volume_acum = sum(historical_doc[m]["volume"] for m in range(to_month))
 
-    for month in range(0, to_month):
-        volume_acum = volume_acum + historical_doc[month]['volume']
-
-    last_month_date = datetime.strptime(historical_doc[0]['date'], '%Y-%m-%d')
+    last_month_date = datetime.strptime(historical_doc[0]["date"], "%Y-%m-%d")
     today_date = datetime.today()
 
-    months_difference = diff_month(today_date, last_month_date)
-
-    if months_difference > 1:
+    if diff_month(today_date, last_month_date) > 1:
         return 0
 
     return volume_acum
 
 
-def function_main(stock_code):
-    """
-    inital point of execution of each stock
-    """
-    data = get_information(stock_code)
-    if data != "invalid":
-        historical = data['Monthly Adjusted Time Series']
-        historical_doc = get_historical_information(historical)
+def process_stock(stock_code):
+    """Process a single stock: fetch history + calculate metrics"""
+    historical_doc = get_stock_history(stock_code)
 
-        variation_twelve_months = get_variation_months(historical_doc, 12)
-        variation_six_months = get_variation_months(historical_doc, 6)
-        volume_in_last_month = get_volume_months(historical_doc, 1)
+    if not historical_doc:
+        return stock_code, None
 
-        new_stock = {
-            "historical": historical_doc,
-            "variationTwelveMonths": variation_twelve_months,
-            "variationSixMonths": variation_six_months,
-            "volumeInLastMonth": volume_in_last_month,
-        }
+    variation_twelve = get_variation_months(historical_doc, 12)
+    variation_six = get_variation_months(historical_doc, 6)
+    volume_last_month = get_volume_months(historical_doc, 1)
 
-        all_stocks.child(stock_code).set(new_stock)
-        print(f'Recuperou o historico de {stock_code}')
-    else:
-        stock_error_list.append(stock_code)
-        print(f'Recuperou o historico de {stock_code} - error')
+    result = {
+        "historical": historical_doc,
+        "variationTwelveMonths": round(variation_twelve, 2),
+        "variationSixMonths": round(variation_six, 2),
+        "volumeInLastMonth": volume_last_month,
+    }
+
+    return stock_code, result
 
 
-#################### INICIO ####################
-totalAtivos = len(stocks)
+if __name__ == "__main__":
+    try:
+        print("Step 1: Initializing Firebase...")
+        sys.stdout.flush()
+        init_firebase()
 
-print(f'Recuperou todos ativos os {len(stocks)} ativos')
+        print("Step 2: Fetching stock list from Firebase...")
+        sys.stdout.flush()
+        stocks = db.reference("stockFundamentus").get()
+        stock_codes = list(stocks.keys())
+        print(f"  Found {len(stock_codes)} stocks")
+        sys.stdout.flush()
 
-for stock_code_i in stocks:
-    function_main(stock_code_i)
+        print("Step 3: Fetching history for each stock (parallel)...")
+        sys.stdout.flush()
 
-TOTAL_ATIVOS_COM_ERRO = len(stock_error_list)
+        success_count = 0
+        error_list = []
+        all_stocks_ref = db.reference("stockHistory")
 
-print(f'Lista dos {TOTAL_ATIVOS_COM_ERRO} ativos com erro:')
-for stockerror in stock_error_list:
-    print(f'{stockerror} - error')
+        # Process in batches with ThreadPool
+        MAX_WORKERS = 10
+        BATCH_SIZE = 50
 
-print()
-print(f'Total de ativos com sucesso: {totalAtivos - TOTAL_ATIVOS_COM_ERRO}')
+        for batch_start in range(0, len(stock_codes), BATCH_SIZE):
+            batch = stock_codes[batch_start:batch_start + BATCH_SIZE]
+
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                futures = {executor.submit(process_stock, code): code for code in batch}
+
+                for future in as_completed(futures):
+                    code = futures[future]
+                    try:
+                        stock_code, result = future.result(timeout=60)
+                        if result:
+                            all_stocks_ref.child(stock_code).set(result)
+                            success_count += 1
+                        else:
+                            error_list.append(stock_code)
+                    except Exception as e:
+                        error_list.append(code)
+                        print(f"  ERROR {code}: {e}")
+
+            processed = min(batch_start + BATCH_SIZE, len(stock_codes))
+            print(f"  Progress: {processed}/{len(stock_codes)} ({success_count} ok, {len(error_list)} errors)")
+            sys.stdout.flush()
+
+            # Small delay between batches to avoid rate limiting
+            if batch_start + BATCH_SIZE < len(stock_codes):
+                time.sleep(2)
+
+        print(f"\nDone! {success_count} stocks saved, {len(error_list)} errors")
+
+        if error_list:
+            print(f"Failed stocks ({len(error_list)}): {', '.join(error_list[:30])}")
+
+        sys.stdout.flush()
+
+    except Exception as e:
+        print(f"FATAL ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
