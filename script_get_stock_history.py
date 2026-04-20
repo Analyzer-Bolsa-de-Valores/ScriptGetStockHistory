@@ -37,10 +37,10 @@ def init_firebase():
 
 
 def fetch_stock_history(stock_code):
-    """Fetch 2 years of daily prices from Investidor10."""
+    """Fetch 6 years of daily prices from Investidor10."""
     try:
         r = requests.get(
-            f"https://investidor10.com.br/api/cotacoes/acao/chart/{stock_code}/730/true",
+            f"https://investidor10.com.br/api/cotacoes/acao/chart/{stock_code}/2190/true",
             headers=HEADERS,
             timeout=REQUEST_TIMEOUT,
         )
