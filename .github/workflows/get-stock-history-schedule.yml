@@ -2,7 +2,7 @@ name: get-stock-history-schedule
 
 on:
   schedule:
-    - cron: "0 12 1,15 * *" # At 12:00 on day-of-month 1 and 15.
+    - cron: "30 20 * * 1-5" # At 20:30 UTC (17:30 BRT) Monday to Friday, 30min after B3 close
   workflow_dispatch: # Allow manual trigger
 
 jobs:
