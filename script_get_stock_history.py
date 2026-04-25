@@ -65,8 +65,73 @@ def fetch_stock_history(stock_code):
         return []
 
 
-def group_daily_to_monthly(daily_prices):
-    """Group daily prices into monthly OHLCV."""
+def fetch_dividends(stock_code):
+    """Fetch dividend history from Fundamentus."""
+    try:
+        r = requests.get(
+            f"https://www.fundamentus.com.br/proventos.php?papel={stock_code}&tipo=2",
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+        if r.status_code != 200:
+            return {}
+
+        from html.parser import HTMLParser
+
+        class DivParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.in_td = False
+                self.current_row = []
+                self.rows = []
+
+            def handle_starttag(self, tag, attrs):
+                if tag == 'td':
+                    self.in_td = True
+                elif tag == 'tr':
+                    self.current_row = []
+
+            def handle_endtag(self, tag):
+                if tag == 'td':
+                    self.in_td = False
+                elif tag == 'tr' and len(self.current_row) >= 4:
+                    self.rows.append(self.current_row)
+
+            def handle_data(self, data):
+                if self.in_td:
+                    t = data.strip()
+                    if t:
+                        self.current_row.append(t)
+
+        html = r.content.decode('latin-1')
+        parser = DivParser()
+        parser.feed(html)
+
+        # Aggregate by payment month: rows = [data_com, valor, tipo, data_pagamento, ...]
+        # Payment date format: DD/MM/YYYY
+        by_month = {}
+        for row in parser.rows:
+            try:
+                valor_str = row[1].replace(',', '.')
+                valor = float(valor_str)
+                pagamento = row[3]  # DD/MM/YYYY
+                parts = pagamento.split('/')
+                if len(parts) == 3:
+                    month_key = f"{parts[2]}-{parts[1]}"  # YYYY-MM
+                    by_month[month_key] = by_month.get(month_key, 0) + valor
+            except (ValueError, IndexError):
+                continue
+
+        return by_month
+    except Exception:
+        return {}
+
+
+def group_daily_to_monthly(daily_prices, dividends_by_month=None):
+    """Group daily prices into monthly OHLCV + dividends."""
+    if dividends_by_month is None:
+        dividends_by_month = {}
+
     monthly = {}
     for entry in daily_prices:
         month_key = entry["date"][:7]
@@ -80,7 +145,7 @@ def group_daily_to_monthly(daily_prices):
                 "low": price,
                 "close": price,
                 "volume": 0,
-                "dividend": 0,
+                "dividend": round(dividends_by_month.get(month_key, 0), 4),
             }
         else:
             m = monthly[month_key]
@@ -95,11 +160,12 @@ def group_daily_to_monthly(daily_prices):
 
 
 def process_stock(stock_code):
-    """Fetch history and build monthly data."""
+    """Fetch history and build monthly data with dividends."""
     daily = fetch_stock_history(stock_code)
     if not daily:
         return stock_code, None
-    return stock_code, group_daily_to_monthly(daily)
+    dividends = fetch_dividends(stock_code)
+    return stock_code, group_daily_to_monthly(daily, dividends)
 
 
 def diff_month(d1, d2):
