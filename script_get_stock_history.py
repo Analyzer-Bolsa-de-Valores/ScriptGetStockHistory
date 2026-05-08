@@ -90,18 +90,36 @@ def fetch_dividends(stock_code):
     parcelas pra não dobrar a soma anual.
     """
     debug = stock_code in ('PETR4', 'ITUB4', 'VALE3', 'BBSE3', 'WEGE3')
+    # 1 retry com timeout maior cobre lentidão pontual do Investidor10. ~3%
+    # das requests deram ReadTimeout em 20s; 30s + retry simples reduz isso.
+    last_err = None
+    r = None
+    for attempt in range(2):
+        try:
+            r = requests.get(
+                f"https://investidor10.com.br/acoes/{stock_code.lower()}/",
+                headers=HEADERS,
+                timeout=30,
+            )
+            break
+        except requests.exceptions.RequestException as e:
+            last_err = e
+            if attempt == 0:
+                time.sleep(1)
+    if r is None:
+        print(f"[DEBUG-DIV {stock_code}] EXCEPTION after retry {type(last_err).__name__}: {last_err}")
+        sys.stdout.flush()
+        return {}
     try:
-        r = requests.get(
-            f"https://investidor10.com.br/acoes/{stock_code.lower()}/",
-            headers=HEADERS,
-            timeout=REQUEST_TIMEOUT,
-        )
         if debug:
             print(f"[DEBUG-DIV {stock_code}] status={r.status_code} len={len(r.content)}")
             sys.stdout.flush()
         if r.status_code != 200:
-            print(f"[DEBUG-DIV {stock_code}] non-200, returning empty")
-            sys.stdout.flush()
+            # Stock delistada não tem página no I10 — 404 esperado pra ~2% das
+            # listadas no fundamentus. Não loga (poluiria log) a não ser debug.
+            if debug:
+                print(f"[DEBUG-DIV {stock_code}] non-200, returning empty")
+                sys.stdout.flush()
             return {}
 
         page = fromstring(r.text)
