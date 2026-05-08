@@ -11,6 +11,10 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
+# curl_cffi simula TLS fingerprint de Chrome real via libcurl impersonation
+# (sem precisar de browser/Playwright). Necessário pra contornar Cloudflare 403
+# do fundamentus.com.br quando rodando do IP do GitHub Actions runner.
+from curl_cffi import requests as cffi_requests
 import firebase_admin
 from firebase_admin import credentials, db
 
@@ -80,10 +84,13 @@ def fetch_dividends(stock_code):
     # DEBUG: amostra apenas pra alguns stocks evita poluir log com 500 dumps.
     debug = stock_code in ('PETR4', 'ITUB4', 'VALE3', 'BBSE3', 'WEGE3')
     try:
-        r = requests.get(
+        # curl_cffi com impersonate=chrome131 envia TLS fingerprint idêntico
+        # ao Chrome 131 — Cloudflare aceita. requests padrão é 403 (5/8/2026).
+        r = cffi_requests.get(
             f"https://www.fundamentus.com.br/proventos.php?papel={stock_code}&tipo=2",
             headers=HEADERS,
             timeout=REQUEST_TIMEOUT,
+            impersonate="chrome131",
         )
         if debug:
             print(f"[DEBUG-DIV {stock_code}] status={r.status_code} len={len(r.content)} content-type={r.headers.get('content-type','?')}")
