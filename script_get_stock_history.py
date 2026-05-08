@@ -67,13 +67,20 @@ def fetch_stock_history(stock_code):
 
 def fetch_dividends(stock_code):
     """Fetch dividend history from Fundamentus."""
+    # DEBUG: amostra apenas pra alguns stocks evita poluir log com 500 dumps.
+    debug = stock_code in ('PETR4', 'ITUB4', 'VALE3', 'BBSE3', 'WEGE3')
     try:
         r = requests.get(
             f"https://www.fundamentus.com.br/proventos.php?papel={stock_code}&tipo=2",
             headers=HEADERS,
             timeout=REQUEST_TIMEOUT,
         )
+        if debug:
+            print(f"[DEBUG-DIV {stock_code}] status={r.status_code} len={len(r.content)} content-type={r.headers.get('content-type','?')}")
+            sys.stdout.flush()
         if r.status_code != 200:
+            print(f"[DEBUG-DIV {stock_code}] non-200, returning empty")
+            sys.stdout.flush()
             return {}
 
         from html.parser import HTMLParser
@@ -104,8 +111,19 @@ def fetch_dividends(stock_code):
                         self.current_row.append(t)
 
         html = r.content.decode('latin-1')
+        if debug:
+            has_tbody = '<tbody>' in html
+            has_table = '<table' in html
+            first_300 = html[:300].replace('\n', ' ')
+            print(f"[DEBUG-DIV {stock_code}] has_table={has_table} has_tbody={has_tbody} first300={first_300!r}")
+            sys.stdout.flush()
+
         parser = DivParser()
         parser.feed(html)
+
+        if debug:
+            print(f"[DEBUG-DIV {stock_code}] parsed_rows={len(parser.rows)} sample={parser.rows[:2] if parser.rows else 'NONE'}")
+            sys.stdout.flush()
 
         # Aggregate by payment month: rows = [data_com, valor, tipo, data_pagamento, ...]
         # Payment date format: DD/MM/YYYY
@@ -122,8 +140,16 @@ def fetch_dividends(stock_code):
             except (ValueError, IndexError):
                 continue
 
+        if debug:
+            print(f"[DEBUG-DIV {stock_code}] aggregated_months={len(by_month)} first3={dict(list(by_month.items())[:3])}")
+            sys.stdout.flush()
         return by_month
-    except Exception:
+    except Exception as e:
+        # Log exception em vez de silenciar — sem isso, qualquer falha de rede
+        # ou parsing fica invisível. ConnectionError, Timeout, SSLError etc
+        # caem aqui.
+        print(f"[DEBUG-DIV {stock_code}] EXCEPTION {type(e).__name__}: {e}")
+        sys.stdout.flush()
         return {}
 
 
