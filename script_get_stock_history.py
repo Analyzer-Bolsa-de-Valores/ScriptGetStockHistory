@@ -16,8 +16,18 @@ from firebase_admin import credentials, db
 
 REQUEST_TIMEOUT = 20
 MAX_WORKERS = 5
+# Headers de browser real. Fundamentus (Cloudflare) retorna 403 com User-Agent
+# incompleto OU com Accept: application/json em endpoints HTML — confirmado via
+# debug logs de 2026-05-08 (todas as 578 chamadas retornaram 403). UA completo
+# + Accept HTML resolve. Investidor10 aceita ambos sem problema.
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+}
+# Headers JSON-only para chamadas à API do Investidor10 (que devolve JSON).
+HEADERS_JSON = {
+    "User-Agent": HEADERS["User-Agent"],
     "Accept": "application/json",
 }
 
@@ -41,7 +51,7 @@ def fetch_stock_history(stock_code):
     try:
         r = requests.get(
             f"https://investidor10.com.br/api/cotacoes/acao/chart/{stock_code}/2190/true",
-            headers=HEADERS,
+            headers=HEADERS_JSON,
             timeout=REQUEST_TIMEOUT,
         )
         if r.status_code != 200:
