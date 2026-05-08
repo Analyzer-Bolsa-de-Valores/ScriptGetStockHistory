@@ -11,13 +11,24 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
+from lxml.html import fromstring
 import firebase_admin
 from firebase_admin import credentials, db
 
 REQUEST_TIMEOUT = 20
 MAX_WORKERS = 5
+# Headers de browser real. Fundamentus (Cloudflare) retorna 403 com User-Agent
+# incompleto OU com Accept: application/json em endpoints HTML — confirmado via
+# debug logs de 2026-05-08 (todas as 578 chamadas retornaram 403). UA completo
+# + Accept HTML resolve. Investidor10 aceita ambos sem problema.
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+}
+# Headers JSON-only para chamadas à API do Investidor10 (que devolve JSON).
+HEADERS_JSON = {
+    "User-Agent": HEADERS["User-Agent"],
     "Accept": "application/json",
 }
 
@@ -41,7 +52,7 @@ def fetch_stock_history(stock_code):
     try:
         r = requests.get(
             f"https://investidor10.com.br/api/cotacoes/acao/chart/{stock_code}/2190/true",
-            headers=HEADERS,
+            headers=HEADERS_JSON,
             timeout=REQUEST_TIMEOUT,
         )
         if r.status_code != 200:
@@ -66,64 +77,83 @@ def fetch_stock_history(stock_code):
 
 
 def fetch_dividends(stock_code):
-    """Fetch dividend history from Fundamentus."""
+    """Fetch dividend history from Investidor10 stock page.
+
+    Fundamentus.com.br foi descartado: retorna 403 do IP do GitHub Actions
+    (Cloudflare TLS fingerprint detection) — confirmado em runs de 2026-05-08.
+    Investidor10 já é a fonte de dailies (fetch_stock_history) e devolve a
+    tabela completa de proventos inline no HTML da página da ação.
+
+    Estratégia de agregação: cada declaração de provento aparece N vezes
+    quando há N parcelas (mesma data_com + tipo + valor, datas de pagamento
+    diferentes). O valor declarado é total — distribuímos uniformemente entre
+    parcelas pra não dobrar a soma anual.
+    """
+    # 1 retry cobre ~3% de timeouts pontuais do Investidor10 (medido em
+    # 2026-05-08). Sleep curto entre tentativas pra não amplificar lentidão.
+    last_err = None
+    r = None
+    for attempt in range(2):
+        try:
+            r = requests.get(
+                f"https://investidor10.com.br/acoes/{stock_code.lower()}/",
+                headers=HEADERS,
+                timeout=30,
+            )
+            break
+        except requests.exceptions.RequestException as e:
+            last_err = e
+            if attempt == 0:
+                time.sleep(1)
+    if r is None:
+        print(f"[fetch_dividends {stock_code}] giving up after retry: {type(last_err).__name__}: {last_err}")
+        sys.stdout.flush()
+        return {}
     try:
-        r = requests.get(
-            f"https://www.fundamentus.com.br/proventos.php?papel={stock_code}&tipo=2",
-            headers=HEADERS,
-            timeout=REQUEST_TIMEOUT,
-        )
         if r.status_code != 200:
+            # 404 esperado pra stocks delistadas que não têm página no I10.
             return {}
 
-        from html.parser import HTMLParser
+        page = fromstring(r.text)
+        tables = page.xpath('//table[@id="table-dividends-history"]')
+        if not tables:
+            return {}
 
-        class DivParser(HTMLParser):
-            def __init__(self):
-                super().__init__()
-                self.in_td = False
-                self.current_row = []
-                self.rows = []
+        rows = tables[0].xpath('tbody/tr')
 
-            def handle_starttag(self, tag, attrs):
-                if tag == 'td':
-                    self.in_td = True
-                elif tag == 'tr':
-                    self.current_row = []
-
-            def handle_endtag(self, tag):
-                if tag == 'td':
-                    self.in_td = False
-                elif tag == 'tr' and len(self.current_row) >= 4:
-                    self.rows.append(self.current_row)
-
-            def handle_data(self, data):
-                if self.in_td:
-                    t = data.strip()
-                    if t:
-                        self.current_row.append(t)
-
-        html = r.content.decode('latin-1')
-        parser = DivParser()
-        parser.feed(html)
-
-        # Aggregate by payment month: rows = [data_com, valor, tipo, data_pagamento, ...]
-        # Payment date format: DD/MM/YYYY
-        by_month = {}
-        for row in parser.rows:
+        # Agrupa parcelas: (data_com, tipo, valor) → [datas_pagamento]. Quando
+        # PETR4 paga JCP em 2 parcelas, a tabela mostra 2 linhas com mesmo
+        # valor declarado e datas de pagamento diferentes. Tratamos como UMA
+        # declaração e dividimos o valor entre as parcelas.
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for tr in rows:
+            tds = [td.xpath('string(.)').strip() for td in tr.xpath('td')]
+            if len(tds) < 4:
+                continue
+            tipo, data_com, pagamento, valor_str = tds[0], tds[1], tds[2], tds[3]
             try:
-                valor_str = row[1].replace(',', '.')
-                valor = float(valor_str)
-                pagamento = row[3]  # DD/MM/YYYY
-                parts = pagamento.split('/')
+                valor = float(valor_str.replace('.', '').replace(',', '.'))
+            except ValueError:
+                continue
+            groups[(data_com, tipo, valor)].append(pagamento)
+
+        by_month = {}
+        for (_, _, valor), pagamentos in groups.items():
+            if not pagamentos or valor <= 0:
+                continue
+            valor_por_parcela = valor / len(pagamentos)
+            for pag in pagamentos:
+                parts = pag.split('/')
                 if len(parts) == 3:
                     month_key = f"{parts[2]}-{parts[1]}"  # YYYY-MM
-                    by_month[month_key] = by_month.get(month_key, 0) + valor
-            except (ValueError, IndexError):
-                continue
+                    by_month[month_key] = by_month.get(month_key, 0) + valor_por_parcela
 
         return by_month
-    except Exception:
+    except Exception as e:
+        # Loga em vez de silenciar — sem isso falhas de parse ficam invisíveis.
+        print(f"[fetch_dividends {stock_code}] {type(e).__name__}: {e}")
+        sys.stdout.flush()
         return {}
 
 
