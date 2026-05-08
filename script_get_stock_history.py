@@ -11,10 +11,7 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
-# curl_cffi simula TLS fingerprint de Chrome real via libcurl impersonation
-# (sem precisar de browser/Playwright). Necessário pra contornar Cloudflare 403
-# do fundamentus.com.br quando rodando do IP do GitHub Actions runner.
-from curl_cffi import requests as cffi_requests
+from lxml.html import fromstring
 import firebase_admin
 from firebase_admin import credentials, db
 
@@ -80,91 +77,76 @@ def fetch_stock_history(stock_code):
 
 
 def fetch_dividends(stock_code):
-    """Fetch dividend history from Fundamentus."""
-    # DEBUG: amostra apenas pra alguns stocks evita poluir log com 500 dumps.
+    """Fetch dividend history from Investidor10 stock page.
+
+    Fundamentus.com.br foi descartado: retorna 403 do IP do GitHub Actions
+    (Cloudflare TLS fingerprint detection) — confirmado em runs de 2026-05-08.
+    Investidor10 já é a fonte de dailies (fetch_stock_history) e devolve a
+    tabela completa de proventos inline no HTML da página da ação.
+
+    Estratégia de agregação: cada declaração de provento aparece N vezes
+    quando há N parcelas (mesma data_com + tipo + valor, datas de pagamento
+    diferentes). O valor declarado é total — distribuímos uniformemente entre
+    parcelas pra não dobrar a soma anual.
+    """
     debug = stock_code in ('PETR4', 'ITUB4', 'VALE3', 'BBSE3', 'WEGE3')
     try:
-        # curl_cffi com impersonate=chrome131 envia TLS fingerprint idêntico
-        # ao Chrome 131 — Cloudflare aceita. requests padrão é 403 (5/8/2026).
-        r = cffi_requests.get(
-            f"https://www.fundamentus.com.br/proventos.php?papel={stock_code}&tipo=2",
+        r = requests.get(
+            f"https://investidor10.com.br/acoes/{stock_code.lower()}/",
             headers=HEADERS,
             timeout=REQUEST_TIMEOUT,
-            impersonate="chrome131",
         )
         if debug:
-            print(f"[DEBUG-DIV {stock_code}] status={r.status_code} len={len(r.content)} content-type={r.headers.get('content-type','?')}")
+            print(f"[DEBUG-DIV {stock_code}] status={r.status_code} len={len(r.content)}")
             sys.stdout.flush()
         if r.status_code != 200:
             print(f"[DEBUG-DIV {stock_code}] non-200, returning empty")
             sys.stdout.flush()
             return {}
 
-        from html.parser import HTMLParser
+        page = fromstring(r.text)
+        tables = page.xpath('//table[@id="table-dividends-history"]')
+        if not tables:
+            if debug:
+                print(f"[DEBUG-DIV {stock_code}] table-dividends-history não encontrada (delisted ou sem proventos)")
+                sys.stdout.flush()
+            return {}
 
-        class DivParser(HTMLParser):
-            def __init__(self):
-                super().__init__()
-                self.in_td = False
-                self.current_row = []
-                self.rows = []
+        rows = tables[0].xpath('tbody/tr')
 
-            def handle_starttag(self, tag, attrs):
-                if tag == 'td':
-                    self.in_td = True
-                elif tag == 'tr':
-                    self.current_row = []
-
-            def handle_endtag(self, tag):
-                if tag == 'td':
-                    self.in_td = False
-                elif tag == 'tr' and len(self.current_row) >= 4:
-                    self.rows.append(self.current_row)
-
-            def handle_data(self, data):
-                if self.in_td:
-                    t = data.strip()
-                    if t:
-                        self.current_row.append(t)
-
-        html = r.content.decode('latin-1')
-        if debug:
-            has_tbody = '<tbody>' in html
-            has_table = '<table' in html
-            first_300 = html[:300].replace('\n', ' ')
-            print(f"[DEBUG-DIV {stock_code}] has_table={has_table} has_tbody={has_tbody} first300={first_300!r}")
-            sys.stdout.flush()
-
-        parser = DivParser()
-        parser.feed(html)
-
-        if debug:
-            print(f"[DEBUG-DIV {stock_code}] parsed_rows={len(parser.rows)} sample={parser.rows[:2] if parser.rows else 'NONE'}")
-            sys.stdout.flush()
-
-        # Aggregate by payment month: rows = [data_com, valor, tipo, data_pagamento, ...]
-        # Payment date format: DD/MM/YYYY
-        by_month = {}
-        for row in parser.rows:
+        # Agrupa parcelas: (data_com, tipo, valor) → [datas_pagamento]. Quando
+        # PETR4 paga JCP em 2 parcelas, a tabela mostra 2 linhas com mesmo
+        # valor declarado e datas de pagamento diferentes. Tratamos como UMA
+        # declaração e dividimos o valor entre as parcelas.
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for tr in rows:
+            tds = [td.xpath('string(.)').strip() for td in tr.xpath('td')]
+            if len(tds) < 4:
+                continue
+            tipo, data_com, pagamento, valor_str = tds[0], tds[1], tds[2], tds[3]
             try:
-                valor_str = row[1].replace(',', '.')
-                valor = float(valor_str)
-                pagamento = row[3]  # DD/MM/YYYY
-                parts = pagamento.split('/')
+                valor = float(valor_str.replace('.', '').replace(',', '.'))
+            except ValueError:
+                continue
+            groups[(data_com, tipo, valor)].append(pagamento)
+
+        by_month = {}
+        for (_, _, valor), pagamentos in groups.items():
+            if not pagamentos or valor <= 0:
+                continue
+            valor_por_parcela = valor / len(pagamentos)
+            for pag in pagamentos:
+                parts = pag.split('/')
                 if len(parts) == 3:
                     month_key = f"{parts[2]}-{parts[1]}"  # YYYY-MM
-                    by_month[month_key] = by_month.get(month_key, 0) + valor
-            except (ValueError, IndexError):
-                continue
+                    by_month[month_key] = by_month.get(month_key, 0) + valor_por_parcela
 
         if debug:
-            print(f"[DEBUG-DIV {stock_code}] aggregated_months={len(by_month)} first3={dict(list(by_month.items())[:3])}")
+            print(f"[DEBUG-DIV {stock_code}] table_rows={len(rows)} declarations={len(groups)} months={len(by_month)} sample={dict(list(by_month.items())[:3])}")
             sys.stdout.flush()
         return by_month
     except Exception as e:
-        # Log exception em vez de silenciar — sem isso, qualquer falha de rede
-        # ou parsing fica invisível. ConnectionError, Timeout, SSLError etc
-        # caem aqui.
         print(f"[DEBUG-DIV {stock_code}] EXCEPTION {type(e).__name__}: {e}")
         sys.stdout.flush()
         return {}
