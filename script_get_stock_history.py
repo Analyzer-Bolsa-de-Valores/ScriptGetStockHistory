@@ -89,9 +89,8 @@ def fetch_dividends(stock_code):
     diferentes). O valor declarado é total — distribuímos uniformemente entre
     parcelas pra não dobrar a soma anual.
     """
-    debug = stock_code in ('PETR4', 'ITUB4', 'VALE3', 'BBSE3', 'WEGE3')
-    # 1 retry com timeout maior cobre lentidão pontual do Investidor10. ~3%
-    # das requests deram ReadTimeout em 20s; 30s + retry simples reduz isso.
+    # 1 retry cobre ~3% de timeouts pontuais do Investidor10 (medido em
+    # 2026-05-08). Sleep curto entre tentativas pra não amplificar lentidão.
     last_err = None
     r = None
     for attempt in range(2):
@@ -107,27 +106,17 @@ def fetch_dividends(stock_code):
             if attempt == 0:
                 time.sleep(1)
     if r is None:
-        print(f"[DEBUG-DIV {stock_code}] EXCEPTION after retry {type(last_err).__name__}: {last_err}")
+        print(f"[fetch_dividends {stock_code}] giving up after retry: {type(last_err).__name__}: {last_err}")
         sys.stdout.flush()
         return {}
     try:
-        if debug:
-            print(f"[DEBUG-DIV {stock_code}] status={r.status_code} len={len(r.content)}")
-            sys.stdout.flush()
         if r.status_code != 200:
-            # Stock delistada não tem página no I10 — 404 esperado pra ~2% das
-            # listadas no fundamentus. Não loga (poluiria log) a não ser debug.
-            if debug:
-                print(f"[DEBUG-DIV {stock_code}] non-200, returning empty")
-                sys.stdout.flush()
+            # 404 esperado pra stocks delistadas que não têm página no I10.
             return {}
 
         page = fromstring(r.text)
         tables = page.xpath('//table[@id="table-dividends-history"]')
         if not tables:
-            if debug:
-                print(f"[DEBUG-DIV {stock_code}] table-dividends-history não encontrada (delisted ou sem proventos)")
-                sys.stdout.flush()
             return {}
 
         rows = tables[0].xpath('tbody/tr')
@@ -160,12 +149,10 @@ def fetch_dividends(stock_code):
                     month_key = f"{parts[2]}-{parts[1]}"  # YYYY-MM
                     by_month[month_key] = by_month.get(month_key, 0) + valor_por_parcela
 
-        if debug:
-            print(f"[DEBUG-DIV {stock_code}] table_rows={len(rows)} declarations={len(groups)} months={len(by_month)} sample={dict(list(by_month.items())[:3])}")
-            sys.stdout.flush()
         return by_month
     except Exception as e:
-        print(f"[DEBUG-DIV {stock_code}] EXCEPTION {type(e).__name__}: {e}")
+        # Loga em vez de silenciar — sem isso falhas de parse ficam invisíveis.
+        print(f"[fetch_dividends {stock_code}] {type(e).__name__}: {e}")
         sys.stdout.flush()
         return {}
 
