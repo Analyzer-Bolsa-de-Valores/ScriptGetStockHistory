@@ -210,8 +210,9 @@ def get_variation_months(hist, to_month):
     last_date = datetime.strptime(hist[0]["date"], "%Y-%m-%d")
     if diff_month(datetime.today(), last_date) > 1 or first == 0:
         return 0
-    if first > last:
-        return ((first / last - 1) * 100) * -1
+    # Fórmula única: positivo pra alta, negativo pra baixa. O branch antigo
+    # `if first > last: ((first/last - 1) * 100) * -1` produzia números absurdos
+    # em quedas grandes (ex: SEQL3 24→1 dava -2300% em vez de -95.83%).
     return (last / first - 1) * 100
 
 
